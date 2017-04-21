@@ -11,9 +11,8 @@
 
 static Profiler *prof;
 FILE *Globals::OutFile;
-static jmethodID pre = 0;
 
-#define MAX_FRAMES 6
+#define MAX_FRAMES 36
 typedef struct Trace {
     /* Number of frames (includes HEAP_TRACKER methods) */
     jint           nframes;
@@ -52,7 +51,7 @@ void getMethodName(jvmtiEnv *jvmti, jmethodID method, char *methodName) {
   err = jvmti->GetMethodName(method, &method_name,
             &method_signature, &generic_ptr_method);
 
-//  sprintf(methodName, "%s::%s\n", class_signature, method_name);
+  sprintf(methodName, "%s::%s\n", class_signature, method_name);
 
 }
 
@@ -60,9 +59,10 @@ void printTraceInfo(jvmtiEnv *jvmti, Trace *trace)
 {
   int i;
   for (i = 0 ; i < trace->nframes ; i++) {
-    //char method_name[100];
-    getMethodName(jvmti, trace->frames[i].method, NULL);
-    //printf("%s", method_name);
+    char *method_name = (char*) malloc(200);
+    getMethodName(jvmti, trace->frames[i].method, method_name);
+    printf("%s", method_name);
+    free(method_name);
   }
   printf("\n\n");
 }
@@ -72,18 +72,20 @@ void JNICALL OnMethodEntry(jvmtiEnv *jvmti_env, JNIEnv *jni_env, jthread thread,
   IMPLICITLY_USE(jni_env);
   IMPLICITLY_USE(thread);
   IMPLICITLY_USE(method);
-  //jvmtiError err;
-  //Trace trace;
-  //char methodName[100];
-  printf("OnMethodEntry:%p\n", method);
-  getMethodName(jvmti_env, method, NULL);
-    
-  //if (strncmp(methodName, "Ljava/lang/Thread;::setPriority", 31) == 0) {
-    //err = jvmti_env->GetStackTrace(thread, 0, MAX_FRAMES+2,
-    //                trace.frames, &(trace.nframes));
-   // printTraceInfo(jvmti_env, &trace);
-    pre = method;
-  //}
+  jvmtiError err;
+  Trace trace;
+  char *methodName = (char*) malloc(200);
+  getMethodName(jvmti_env, method, methodName);
+
+  if (strncmp(methodName, "Ljava/lang/Thread;::setPriority", 31) == 0) {
+    err = jvmti_env->GetStackTrace(thread, 0, MAX_FRAMES+2,
+                    trace.frames, &(trace.nframes));
+    printf("%d\n", trace.nframes);
+    if (trace.nframes > 0 && trace.nframes < MAX_FRAMES) {
+      printTraceInfo(jvmti_env, &trace);
+    }
+  }
+  free(methodName);
 }
 
 void JNICALL OnMethodExit(jvmtiEnv *jvmti_env, JNIEnv *jni_env, jthread thread, jmethodID method, jboolean wasPoppedByException, jvalue return_value) {
@@ -93,9 +95,6 @@ void JNICALL OnMethodExit(jvmtiEnv *jvmti_env, JNIEnv *jni_env, jthread thread, 
   IMPLICITLY_USE(method);
   IMPLICITLY_USE(wasPoppedByException);
   IMPLICITLY_USE(return_value);
-  if (((long)method>>32) != ((long)pre>>32)) {   
-    pre = method;
-  }
 }
 // This has to be here, or the VM turns off class loading events.
 // And AsyncGetCallTrace needs class loading events to be turned on!
@@ -216,7 +215,7 @@ static bool RegisterJvmti(jvmtiEnv *jvmti) {
   callbacks->ClassPrepare = &OnClassPrepare;
 
   callbacks->MethodEntry = &OnMethodEntry;
-  callbacks->MethodExit = &OnMethodExit;
+  //callbacks->MethodExit = &OnMethodExit;
 
   JVMTI_ERROR_1(
       (jvmti->SetEventCallbacks(callbacks, sizeof(jvmtiEventCallbacks))),
@@ -224,7 +223,7 @@ static bool RegisterJvmti(jvmtiEnv *jvmti) {
   printf("SetEventCallbacks successfull\n");
   jvmtiEvent events[] = {JVMTI_EVENT_CLASS_LOAD, JVMTI_EVENT_CLASS_PREPARE,
                          JVMTI_EVENT_THREAD_END, JVMTI_EVENT_THREAD_START,
-                         JVMTI_EVENT_VM_DEATH, JVMTI_EVENT_VM_INIT, JVMTI_EVENT_METHOD_ENTRY, JVMTI_EVENT_METHOD_EXIT};
+                         JVMTI_EVENT_VM_DEATH, JVMTI_EVENT_VM_INIT, JVMTI_EVENT_METHOD_ENTRY};
 
   size_t num_events = sizeof(events) / sizeof(jvmtiEvent);
 
