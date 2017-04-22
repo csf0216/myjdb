@@ -11,6 +11,7 @@
 
 static Profiler *prof;
 FILE *Globals::OutFile;
+FILE *Out;
 
 #define MAX_FRAMES 36
 typedef struct Trace {
@@ -150,10 +151,10 @@ void printTraceInfo(jvmtiEnv *jvmti, Trace *trace)
   for (i = 0 ; i < trace->nframes ; i++) {
     char *method_name = (char*) malloc(200);
     getFrameName(jvmti, trace->frames[i].method, method_name, i);
-    printf("%s", method_name);
+    fprintf(Out, "%s", method_name);
     free(method_name);
   }
-  printf("\n\n");
+  fprintf(Out, "\n\n");
 }
 
 void JNICALL OnMethodEntry(jvmtiEnv *jvmti_env, JNIEnv *jni_env, jthread thread, jmethodID method) {
@@ -173,7 +174,7 @@ void JNICALL OnMethodEntry(jvmtiEnv *jvmti_env, JNIEnv *jni_env, jthread thread,
   if (strncmp(methodName, target, strlen(target)) == 0) {
     err = jvmti_env->GetStackTrace(thread, 0, MAX_FRAMES+2,
                     trace.frames, &(trace.nframes));
-    printf("%d\n", trace.nframes);
+    fprintf(Out, "%d\n", trace.nframes);
     if (trace.nframes > 0 && trace.nframes < MAX_FRAMES) {
       printTraceInfo(jvmti_env, &trace);
     }
@@ -287,7 +288,7 @@ static bool PrepareJvmti(jvmtiEnv *jvmti) {
 
     // This adds the capabilities.
     if ((error = jvmti->AddCapabilities(&caps)) != JVMTI_ERROR_NONE) {
-      fprintf(stderr, "Failed to add capabilities with error %d\n", error);
+      //fprintf(stderr, "Failed to add capabilities with error %d\n", error);
       return false;
     }
   }
@@ -313,7 +314,7 @@ static bool RegisterJvmti(jvmtiEnv *jvmti) {
   JVMTI_ERROR_1(
       (jvmti->SetEventCallbacks(callbacks, sizeof(jvmtiEventCallbacks))),
       false);
-  printf("SetEventCallbacks successfull\n");
+  // fprintf(Out, "SetEventCallbacks successfull\n");
   jvmtiEvent events[] = {JVMTI_EVENT_THREAD_END, JVMTI_EVENT_THREAD_START,
                          JVMTI_EVENT_VM_DEATH, JVMTI_EVENT_VM_INIT, JVMTI_EVENT_METHOD_ENTRY};
 
@@ -325,7 +326,7 @@ static bool RegisterJvmti(jvmtiEnv *jvmti) {
     JVMTI_ERROR_1(
         (jvmti->SetEventNotificationMode(JVMTI_ENABLE, events[i], NULL)),
         false);
-    printf("SetEventNotificationMode successfull\n");
+    //fprintf(Out, "SetEventNotificationMode successfull\n");
   }
 
   return true;
@@ -420,10 +421,13 @@ AGENTEXPORT jint JNICALL Agent_OnLoad(JavaVM *vm, char *options,
 
   prof = new Profiler(jvmti);
 
+  Out = fopen("./log", "w+");
+
   return 0;
 }
 
 AGENTEXPORT void JNICALL Agent_OnUnload(JavaVM *vm) {
   IMPLICITLY_USE(vm);
   Accessors::Destroy();
+  fclose(Out);
 }
