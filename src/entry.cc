@@ -33,6 +33,95 @@ void JNICALL OnThreadEnd(jvmtiEnv *jvmti_env, JNIEnv *jni_env, jthread thread) {
   IMPLICITLY_USE(thread);
 }
 
+static void CleanJavaSignature(char *signature_ptr) {
+  size_t signature_length = strlen(signature_ptr);  // ugh!
+  if (signature_length < 3) {                    // I'm not going to even try.
+    return;
+  }
+
+  signature_ptr[0] = ' ';
+  for (size_t i = 1; i < signature_length - 1; ++i) {
+    if (signature_ptr[i] == '/') {
+      signature_ptr[i] = '.';
+    }
+  }
+  signature_ptr[signature_length - 1] = '\0';
+}
+
+jint GetLineNumber(jvmtiEnv *jvmti_, jmethodID method, jlocation location) {
+  jint entry_count;
+  JvmtiScopedPtr<jvmtiLineNumberEntry> table_ptr_ctr(jvmti_);
+  jint line_number = -1;
+
+  // Shortcut for native methods.
+  if (location == -1) {
+    return -1;
+  }
+
+  int jvmti_error = jvmti_->GetLineNumberTable(method,
+                                              &entry_count,
+                                              table_ptr_ctr.GetRef());
+
+  // Go through all the line numbers...
+  if (JVMTI_ERROR_NONE != jvmti_error) {
+    table_ptr_ctr.AbandonBecauseOfError();
+  } else {
+    jvmtiLineNumberEntry *table_ptr = table_ptr_ctr.Get();
+    if (entry_count > 1) {
+      jlocation last_location = table_ptr[0].start_location;
+      for (int l = 1; l < entry_count; l++) {
+        // ... and if you see one that is in the right place for your
+        // location, you've found the line number!
+        if ((location < table_ptr[l].start_location) &&
+            (location >= last_location)) {
+          line_number = table_ptr[l-1].line_number;
+          return line_number;
+        }
+        last_location = table_ptr[l].start_location;
+      }
+      if (location >= last_location) {
+        return table_ptr[entry_count - 1].line_number;
+      }
+    } else if (entry_count == 1) {
+      line_number = table_ptr[0].line_number;
+    }
+  }
+  return line_number;
+}
+
+void getFrameName(jvmtiEnv *jvmti, jmethodID method, char *frameName, jint location) {
+  char* method_name = NULL;
+  char* method_signature = NULL;
+  char* class_signature = NULL;
+  char* generic_ptr_method = NULL;
+  char* generic_ptr_class = NULL;
+  jclass declaringclassptr;
+  jvmtiError err;
+
+  err = jvmti->GetMethodDeclaringClass(method,
+            &declaringclassptr);
+
+  err = jvmti->GetClassSignature(declaringclassptr,
+            &class_signature, &generic_ptr_class);
+
+  err = jvmti->GetMethodName(method, &method_name,
+            &method_signature, &generic_ptr_method);
+
+  char *filename;
+  JvmtiScopedPtr<char> source_name_ptr(jvmti);
+  static char file_unknown[] = "UnknownFile";
+  if (JVMTI_ERROR_NONE !=
+      jvmti->GetSourceFileName(declaringclassptr, source_name_ptr.GetRef())) {
+    source_name_ptr.AbandonBecauseOfError();
+    filename = file_unknown;
+  } else {
+    filename = source_name_ptr.Get();
+  }
+  CleanJavaSignature(class_signature);
+  int line_num = GetLineNumber(jvmti, method, location);
+  sprintf(frameName, "%s.%s(%s:%d)\n", class_signature, method_name, filename,line_num);
+}
+
 void getMethodName(jvmtiEnv *jvmti, jmethodID method, char *methodName) {
   char* method_name = NULL;
   char* method_signature = NULL;
@@ -51,8 +140,8 @@ void getMethodName(jvmtiEnv *jvmti, jmethodID method, char *methodName) {
   err = jvmti->GetMethodName(method, &method_name,
             &method_signature, &generic_ptr_method);
 
-  sprintf(methodName, "%s::%s\n", class_signature, method_name);
-
+  class_signature[strlen(class_signature)-1] = '.';
+  sprintf(methodName, "%s%s\n", class_signature, method_name);
 }
 
 void printTraceInfo(jvmtiEnv *jvmti, Trace *trace)
@@ -60,7 +149,7 @@ void printTraceInfo(jvmtiEnv *jvmti, Trace *trace)
   int i;
   for (i = 0 ; i < trace->nframes ; i++) {
     char *method_name = (char*) malloc(200);
-    getMethodName(jvmti, trace->frames[i].method, method_name);
+    getFrameName(jvmti, trace->frames[i].method, method_name, i);
     printf("%s", method_name);
     free(method_name);
   }
@@ -77,7 +166,11 @@ void JNICALL OnMethodEntry(jvmtiEnv *jvmti_env, JNIEnv *jni_env, jthread thread,
   char *methodName = (char*) malloc(200);
   getMethodName(jvmti_env, method, methodName);
 
-  if (strncmp(methodName, "Ljava/lang/Thread;::setPriority", 31) == 0) {
+  char *target = getenv("TARGET");
+  if (target == NULL) {
+    return;
+  }
+  if (strncmp(methodName, target, strlen(target)) == 0) {
     err = jvmti_env->GetStackTrace(thread, 0, MAX_FRAMES+2,
                     trace.frames, &(trace.nframes));
     printf("%d\n", trace.nframes);
@@ -211,8 +304,8 @@ static bool RegisterJvmti(jvmtiEnv *jvmti) {
   callbacks->VMInit = &OnVMInit;
   callbacks->VMDeath = &OnVMDeath;
 
-  callbacks->ClassLoad = &OnClassLoad;
-  callbacks->ClassPrepare = &OnClassPrepare;
+  //callbacks->ClassLoad = &OnClassLoad;
+  //callbacks->ClassPrepare = &OnClassPrepare;
 
   callbacks->MethodEntry = &OnMethodEntry;
   //callbacks->MethodExit = &OnMethodExit;
@@ -221,8 +314,7 @@ static bool RegisterJvmti(jvmtiEnv *jvmti) {
       (jvmti->SetEventCallbacks(callbacks, sizeof(jvmtiEventCallbacks))),
       false);
   printf("SetEventCallbacks successfull\n");
-  jvmtiEvent events[] = {JVMTI_EVENT_CLASS_LOAD, JVMTI_EVENT_CLASS_PREPARE,
-                         JVMTI_EVENT_THREAD_END, JVMTI_EVENT_THREAD_START,
+  jvmtiEvent events[] = {JVMTI_EVENT_THREAD_END, JVMTI_EVENT_THREAD_START,
                          JVMTI_EVENT_VM_DEATH, JVMTI_EVENT_VM_INIT, JVMTI_EVENT_METHOD_ENTRY};
 
   size_t num_events = sizeof(events) / sizeof(jvmtiEvent);
